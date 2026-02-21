@@ -1,0 +1,64 @@
+---
+title: "t-SNE"
+output: html_notebook
+---
+
+```{r paquetes}
+# Quitar el # para instalar los paquetes que no tengan
+# install.packages("Rtsne")
+# install.packages("ggplot2")
+# install.packages("dplyr")
+# install.packages("readr")
+
+library(Rtsne)
+library(ggplot2)
+library(dplyr)
+library(readr)
+```
+
+```{r carga de datos}
+data <- read.csv("data.csv", header = TRUE)
+
+# Eliminar columna vacía
+data <- data %>% select(where(~ !all(is.na(.))))
+dim(data)
+# Eliminar ID
+data <- data %>% select(-id)
+
+# Convertir diagnóstico en factor
+diagnosis <- as.factor(data$diagnosis)
+
+# Seleccionar solo variables numéricas
+data_numeric <- data %>% select(-diagnosis)
+
+# Verificar que no existan más NA
+sum(is.na(data_numeric))
+```
+
+```{r escalado}
+data_scaled <- scale(data_numeric)
+```
+
+```{r aplicar t-SNE}
+set.seed(123)
+# Cambiar dims para la cantidad de dimensiones y perplexity para la cantidad de vecinos de cada punto (se recomienda entre 20 t 40)
+tsne_result <- Rtsne(data_scaled, dims = 2, perplexity = 30, verbose = TRUE, max_iter = 500, theta = 0.5, pca = TRUE)
+
+tsne_data <- as.data.frame(tsne_result$Y)
+colnames(tsne_data) <- c("Dim1", "Dim2")
+
+tsne_data$diagnosis <- diagnosis
+```
+
+```{r visualización}
+ggplot(tsne_data, aes(x = Dim1, y = Dim2, color = diagnosis)) +
+  geom_point(size = 2, alpha = 0.8) +
+  labs(
+    title = "t-SNE aplicado al dataset",
+    x = "Dimensión 1",
+    y = "Dimensión 2",
+    color = "Diagnóstico"
+  ) +
+  theme_minimal()
+```
+
