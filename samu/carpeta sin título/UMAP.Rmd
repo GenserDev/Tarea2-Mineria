@@ -1,0 +1,58 @@
+---
+title: "UMAP"
+output: html_document
+---
+```{r algo}
+# 0. Instalar paquetes si no los tienes en tu entorno
+# install.packages(c("umap", "ggplot2", "dplyr"))
+
+library(umap)
+library(ggplot2)
+library(dplyr)
+
+# 1. Cargar los datos
+# Asegúrate de que el nombre del archivo coincida con el tuyo
+df <- read.csv("data.csv")
+
+# 2. Preprocesamiento de los datos
+etiquetas <- df$diagnosis
+
+# Eliminamos 'id' y 'diagnosis', eliminamos columnas 100% vacías y quitamos filas con NAs
+datos_numericos <- df %>% 
+  select(-id, -diagnosis) %>% 
+  select(where(~!all(is.na(.)))) %>% # Esto elimina la famosa columna fantasma de Kaggle
+  na.omit() # Esto elimina cualquier fila que tenga algún dato en blanco
+
+# ¡Paso crítico!: Estandarizar (escalar) las variables continuas
+datos_escalados <- scale(datos_numericos)
+
+# 3. Aplicar el algoritmo UMAP
+# Fijamos una semilla (seed) para que la reducción sea reproducible si necesitas correr el script varias veces
+set.seed(42) 
+
+# Ejecutamos UMAP sobre los datos ya escalados
+umap_resultado <- umap(datos_escalados)
+
+# 4. Preparar el dataframe para la visualización
+# umap_resultado$layout contiene la matriz con las dos nuevas coordenadas
+df_umap <- data.frame(
+  UMAP1 = umap_resultado$layout[, 1],
+  UMAP2 = umap_resultado$layout[, 2],
+  Diagnostico = etiquetas
+)
+
+# 5. Generar la visualización
+ggplot(df_umap, aes(x = UMAP1, y = UMAP2, color = Diagnostico)) +
+  geom_point(alpha = 0.7, size = 2.5) +
+  # Colores amigables a la vista: Verde para Benigno, Naranja/Rojo para Maligno
+  scale_color_manual(values = c("B" = "#1b9e77", "M" = "#d95f02")) + 
+  labs(
+    title = "Proyección UMAP: Dataset Breast Cancer Wisconsin",
+    subtitle = "Separación de células benignas y malignas desde 30 dimensiones",
+    x = "Dimensión UMAP 1",
+    y = "Dimensión UMAP 2",
+    color = "Diagnóstico"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```

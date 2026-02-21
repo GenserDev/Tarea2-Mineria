@@ -1,0 +1,49 @@
+``` {r}
+# Cargar librería para manipular datos
+library(tidyverse)
+
+# Leer las calificaciones (u.data usa tabulaciones \t)
+ratings <- read.table("u.data", sep = "\t", 
+                      col.names = c("user_id", "movie_id", "rating", "timestamp"))
+
+# Ver las primeras filas para confirmar la carga
+head(ratings)
+```
+
+```{r}
+# Transformar a formato de matriz (Usuarios x Películas)
+matriz_raw <- ratings %>%
+  select(user_id, movie_id, rating) %>%
+  pivot_wider(names_from = movie_id, values_from = rating) %>%
+  column_to_rownames("user_id") %>%
+  as.matrix()
+
+# Llenamos con 0 los espacios donde un usuario no ha visto una película
+matriz_raw[is.na(matriz_raw)] <- 0
+
+# Ver dimensiones: Usuarios (filas) x Películas (columnas)
+dim(matriz_raw)
+```
+
+```{r}
+# Paso A: Centrar y Escalar los datos (media 0, sd 1)
+matriz_normalizada <- scale(matriz_raw)
+
+# Paso B: Ejecutar el algoritmo SVD
+resultado_svd <- svd(matriz_normalizada)
+
+# Paso C: Extraer las matrices resultantes
+U <- resultado_svd$u       # Relación Usuarios con "Géneros Latentes"
+D <- diag(resultado_svd$d) # Importancia de cada componente (Sigma)
+V <- resultado_svd$v       # Relación Películas con "Géneros Latentes"
+```
+
+```{r}
+# Calcular la varianza explicada por cada valor singular
+varianza <- resultado_svd$d^2 / sum(resultado_svd$d^2)
+
+# Graficar los primeros 20 componentes
+plot(varianza[1:20], type = "b", pch = 19, col = "blue",
+     main = "Scree Plot: Varianza por Valor Singular",
+     xlab = "Componente Principal", ylab = "Proporción de Varianza")
+```
