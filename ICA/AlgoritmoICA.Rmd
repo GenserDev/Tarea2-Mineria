@@ -1,0 +1,238 @@
+---
+title: "AlgoritmoICA"
+author: "Genser"
+date: "2026-02-20"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Algoritmo ICA
+### 1. Librerias
+
+```{r}
+library(edfReader)
+library(fastICA)
+library(ggplot2)
+library(reshape2)
+library(signal)
+library(pracma)
+```
+
+---
+
+### 2. Carga de datos
+
+```{r}
+DATA_DIR <- "./eeg-during-mental-arithmetic-tasks-1.0.0/eeg-during-mental-arithmetic-tasks-1.0.0"
+SUJETO_ID <- "00"
+
+archivo_reposo <- file.path(DATA_DIR, paste0("Subject", SUJETO_ID, "_1.edf"))
+archivo_tarea  <- file.path(DATA_DIR, paste0("Subject", SUJETO_ID, "_2.edf"))
+
+header_reposo <- readEdfHeader(archivo_reposo)
+header_tarea  <- readEdfHeader(archivo_tarea)
+
+edf_reposo <- readEdfSignals(header_reposo)
+edf_tarea  <- readEdfSignals(header_tarea)
+
+canales_eeg <- names(edf_reposo)
+canales_eeg <- canales_eeg[!grepl("EOG|EMG|EKG|ECG|Trigger|Status|annotations",
+                                   canales_eeg, ignore.case = TRUE)]
+n_canales <- length(canales_eeg)
+fs        <- edf_reposo[[canales_eeg[1]]]$sRate
+
+cat("Canales:", n_canales, "| Frecuencia de muestreo:", fs, "Hz\n")
+```
+
+---
+
+### 3. Preprocesamiento
+
+```{r}
+construir_matriz <- function(edf, canales) {
+  mat <- do.call(cbind, lapply(canales, function(ch) as.numeric(edf[[ch]]$signal)))
+  colnames(mat) <- canales
+  return(mat)
+}
+
+X_reposo <- construir_matriz(edf_reposo, canales_eeg)
+X_tarea  <- construir_matriz(edf_tarea,  canales_eeg)
+
+centrar <- function(X) sweep(X, 2, colMeans(X), "-")
+
+filtro <- butter(n = 4, W = c(1, 40) / (fs / 2), type = "pass")
+
+aplicar_filtro <- function(X, f) apply(X, 2, function(col) filtfilt(f, col))
+
+X_reposo_f <- aplicar_filtro(centrar(X_reposo), filtro)
+X_tarea_f  <- aplicar_filtro(centrar(X_tarea),  filtro)
+
+X_reposo_f <- apply(X_reposo_f, 2, detrend)
+X_tarea_f  <- apply(X_tarea_f,  2, detrend)
+
+cat("Preprocesamiento completado. Dimensiones:", dim(X_reposo_f), "\n")
+```
+
+---
+
+### 4. Aplicacion de FastICA
+
+```{r}
+ica_reposo <- fastICA(X_reposo_f, n.comp = n_canales, fun = "logcosh",
+                      method = "C", maxit = 200, tol = 1e-4, verbose = FALSE)
+
+ica_tarea  <- fastICA(X_tarea_f,  n.comp = n_canales, fun = "logcosh",
+                      method = "C", maxit = 200, tol = 1e-4, verbose = FALSE)
+
+cat("ICA completado. Componentes extraidas:", ncol(ica_reposo$S), "\n")
+```
+
+---
+
+### 5. Analisis espectral (PSD)
+
+```{r}
+calcular_psd <- function(senal, fs, n_puntos = 256) {
+  freqs     <- seq(0, fs/2, length.out = n_puntos/2 + 1)
+  potencias <- numeric(length(freqs))
+  n_vent    <- 0
+  w_hann    <- 0.5 * (1 - cos(2 * pi * seq(0, n_puntos-1) / (n_puntos-1)))
+
+  for (i in seq(1, length(senal) - n_puntos + 1, by = n_puntos/2)) {
+    seg       <- senal[i:(i + n_puntos - 1)] * w_hann
+    psd_seg   <- (Mod(fft(seg)[1:(n_puntos/2 + 1)])^2) / (fs * n_puntos)
+    potencias <- potencias + psd_seg
+    n_vent    <- n_vent + 1
+  }
+  data.frame(frecuencia = freqs, potencia = potencias / n_vent)
+}
+
+freqs      <- calcular_psd(ica_reposo$S[,1], fs)$frecuencia
+psd_reposo <- apply(ica_reposo$S, 2, function(ic) calcular_psd(ic, fs)$potencia)
+psd_tarea  <- apply(ica_tarea$S,  2, function(ic) calcular_psd(ic, fs)$potencia)
+
+bandas <- list(Delta = c(0.5,4), Theta = c(4,8),
+               Alpha = c(8,13),  Beta  = c(13,30), Gamma = c(30,40))
+
+pot_banda <- function(psd, banda) {
+  mean(colMeans(psd[freqs >= banda[1] & freqs <= banda[2], , drop=FALSE]))
+}
+
+cambio <- sapply(bandas, function(b) {
+  r <- pot_banda(psd_reposo, b)
+  t <- pot_banda(psd_tarea,  b)
+  round((t - r) / r * 100, 2)
+})
+
+cat("Cambio relativo de potencia (%) Tarea vs Reposo:\n")
+print(cambio)
+```
+
+---
+
+### 6. Visualizaciones
+
+#### Figura 1: Senal original vs limpia
+
+```{r fig.width=10, fig.height=4}
+tiempo <- seq(0, nrow(X_reposo_f)/fs, length.out = nrow(X_reposo_f))
+
+S_limpio      <- ica_reposo$S
+S_limpio[, 1] <- 0
+X_limpio      <- S_limpio %*% t(ica_reposo$A)
+
+df <- data.frame(
+  tiempo   = tiempo[tiempo <= 5],
+  original = X_reposo_f[tiempo <= 5, 1],
+  limpia   = X_limpio[tiempo <= 5, 1]
+)
+
+df_largo <- melt(df, id.vars = "tiempo",
+                 variable.name = "Senal", value.name = "Amplitud")
+
+ggplot(df_largo, aes(x = tiempo, y = Amplitud, color = Senal)) +
+  geom_line(linewidth = 0.5) +
+  scale_color_manual(values = c("original" = "#E74C3C", "limpia" = "#2ECC71"),
+                     labels  = c("EEG Original", "EEG Limpio (post-ICA)")) +
+  labs(title = "Figura 1: EEG Original vs Limpio (primeros 5 segundos)",
+       x = "Tiempo (s)", y = "Amplitud (uV)", color = "Senal") +
+  theme_bw()
+```
+
+#### Figura 2: Primeras 6 componentes ICA
+
+```{r fig.width=10, fig.height=7}
+n_mostrar <- 6
+t_ic      <- seq(0, 2, length.out = 2 * fs)
+
+df_ic <- do.call(rbind, lapply(1:n_mostrar, function(i) {
+  data.frame(tiempo     = t_ic,
+             amplitud   = ica_reposo$S[1:length(t_ic), i],
+             componente = paste0("IC", i))
+}))
+
+ggplot(df_ic, aes(x = tiempo, y = amplitud)) +
+  geom_line(linewidth = 0.4, color = "#2980B9") +
+  facet_wrap(~componente, scales = "free_y", ncol = 2) +
+  labs(title = "Figura 2: Primeras 6 Componentes Independientes (Reposo)",
+       x = "Tiempo (s)", y = "Amplitud (u.a.)") +
+  theme_bw()
+```
+
+#### Figura 3: PSD - Reposo vs Tarea
+
+```{r fig.width=10, fig.height=5}
+mask <- freqs <= 40
+
+df_psd <- data.frame(
+  frecuencia = rep(freqs[mask], 2),
+  potencia   = c(rowMeans(psd_reposo[mask,]), rowMeans(psd_tarea[mask,])),
+  condicion  = rep(c("Reposo", "Tarea Aritmetica"), each = sum(mask))
+)
+
+bandas_df <- data.frame(
+  xmin = c(0.5, 4, 8,  13),
+  xmax = c(4,   8, 13, 30),
+  fill = c("#AED6F1", "#A9DFBF", "#F9E79F", "#F5CBA7")
+)
+
+ggplot() +
+  geom_rect(data = bandas_df,
+            aes(xmin=xmin, xmax=xmax, ymin=0, ymax=Inf, fill=fill),
+            alpha = 0.25, inherit.aes = FALSE) +
+  scale_fill_identity() +
+  geom_line(data = df_psd,
+            aes(x=frecuencia, y=potencia, color=condicion), linewidth = 0.8) +
+  scale_color_manual(values = c("Reposo" = "#2980B9", "Tarea Aritmetica" = "#E74C3C")) +
+  annotate("text", x = c(2, 6, 10.5, 21.5), y = Inf,
+           label = c("delta","theta","alpha","beta"),
+           vjust = 1.5, size = 4, fontface = "bold", color = "gray40") +
+  scale_x_continuous(limits = c(0,40), breaks = seq(0,40,5)) +
+  labs(title = "Figura 3: PSD - Reposo vs Tarea Aritmetica",
+       x = "Frecuencia (Hz)", y = "Potencia (uV2/Hz)", color = "Condicion") +
+  theme_bw() + theme(legend.position = "top")
+```
+
+#### Figura 4: Potencia por banda
+
+```{r fig.width=8, fig.height=5}
+df_bandas <- do.call(rbind, lapply(names(bandas), function(nm) {
+  b <- bandas[[nm]]
+  data.frame(Banda     = nm,
+             Condicion = c("Reposo", "Tarea"),
+             Potencia  = c(pot_banda(psd_reposo, b), pot_banda(psd_tarea, b)))
+}))
+
+df_bandas$Banda <- factor(df_bandas$Banda,
+                           levels = c("Delta","Theta","Alpha","Beta","Gamma"))
+
+ggplot(df_bandas, aes(x = Banda, y = Potencia, fill = Condicion)) +
+  geom_bar(stat = "identity", position = "dodge", width = 0.6) +
+  scale_fill_manual(values = c("Reposo" = "#2980B9", "Tarea" = "#E74C3C")) +
+  labs(title = "Figura 4: Potencia por Banda - Reposo vs Tarea",
+       x = "Banda", y = "Potencia (uV2/Hz)", fill = "Condicion") +
+  theme_bw() + theme(legend.position = "top")
+```
